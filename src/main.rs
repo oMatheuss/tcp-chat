@@ -1,56 +1,55 @@
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::result;
-use std::io::{Read, Write};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::thread;
 use std::sync::Arc;
+use std::thread;
 
 type Result<T> = result::Result<T, ()>;
 
 enum ChatMessage {
-	Connected(Arc<TcpStream>),
-	Disconnected,
-	Message(Vec<u8>)
+    Connected(Arc<TcpStream>),
+    Disconnected,
+    Message(Vec<u8>),
 }
 
 struct Client {
-	sender: Sender<ChatMessage>,
-    stream: Arc<TcpStream>
+    sender: Sender<ChatMessage>,
+    stream: Arc<TcpStream>,
 }
 
 impl Client {
-	fn handle_connection(self) -> Result<()> {
-		self.sender
-			.send(ChatMessage::Connected(self.stream.clone()))
-			.map_err(|err| eprintln!("ERROR: channel hang up - {err}"))?;
+    fn handle_connection(self) -> Result<()> {
+        self.sender
+            .send(ChatMessage::Connected(self.stream.clone()))
+            .map_err(|err| eprintln!("ERROR: channel hang up - {err}"))?;
 
-		let mut buffer = Vec::new();
-		buffer.resize(64, 0u8);
+        let mut buffer = Vec::new();
+        buffer.resize(64, 0u8);
 
-		loop {
-			let n = self.stream.as_ref().read(&mut buffer).map_err(|err| {
-				eprintln!("ERROR: could not read stream - {err}");
-				let _ = self.sender.send(ChatMessage::Disconnected);
-			})?;
+        loop {
+            let n = self.stream.as_ref().read(&mut buffer).map_err(|err| {
+                eprintln!("ERROR: could not read stream - {err}");
+                let _ = self.sender.send(ChatMessage::Disconnected);
+            })?;
 
-			self.sender
-				.send(ChatMessage::Message(buffer[0..n].to_vec()))
-				.map_err(|err| eprintln!("ERROR: channel hang up - {err}"))?;
-		}
-	}
+            self.sender
+                .send(ChatMessage::Message(buffer[0..n].to_vec()))
+                .map_err(|err| eprintln!("ERROR: channel hang up - {err}"))?;
+        }
+    }
 }
-
 
 struct Server {
     receiver: Receiver<ChatMessage>,
-	clients: Vec<Arc<TcpStream>>
+    clients: Vec<Arc<TcpStream>>,
 }
 
 impl Server {
     fn new(recv: Receiver<ChatMessage>) -> Self {
         Self {
             receiver: recv,
-			clients: Vec::new()
+            clients: Vec::new(),
         }
     }
 
@@ -64,18 +63,16 @@ impl Server {
                     todo!()
                 }
                 ChatMessage::Message(message) => {
-					let message = String::from_utf8(message);
+                    let message = String::from_utf8(message);
 
-					match message {
-						Ok(message) => {
-							println!("{message}");
-							//let _ = write!(self.clients[0].as_ref(), "{message}");
-						},
-						Err(error) => eprintln!("{}", error),
-					}
-
-					
-				},
+                    match message {
+                        Ok(message) => {
+                            println!("{message}");
+                            //let _ = write!(self.clients[0].as_ref(), "{message}");
+                        }
+                        Err(error) => eprintln!("{}", error),
+                    }
+                }
             }
         }
     }
@@ -102,7 +99,10 @@ fn main() -> Result<()> {
                 let sender = sender.clone();
 
                 thread::spawn(|| {
-					let client = Client { stream: stream.into(), sender };
+                    let client = Client {
+                        stream: stream.into(),
+                        sender,
+                    };
                     let _ = client.handle_connection();
                 });
             }
