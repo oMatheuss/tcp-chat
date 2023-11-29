@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::result;
@@ -9,68 +10,68 @@ type Result<T> = result::Result<T, ()>;
 
 enum ChatMessage {
     Connected(Arc<TcpStream>),
-    Disconnected,
-    Message(Vec<u8>),
+    Disconnected(Arc<TcpStream>),
+    Message(Arc<TcpStream>, Vec<u8>),
 }
 
 struct Client {
-    sender: Sender<ChatMessage>,
-    stream: Arc<TcpStream>,
+    conn: Arc<TcpStream>,
 }
 
-impl Client {
-    fn handle_connection(self) -> Result<()> {
-        self.sender
-            .send(ChatMessage::Connected(self.stream.clone()))
+fn client(sender: Sender<ChatMessage>, stream: Arc<TcpStream>) -> Result<()> {
+    sender
+        .send(ChatMessage::Connected(stream.clone()))
+        .map_err(|err| eprintln!("ERROR: channel hang up - {err}"))?;
+
+    let mut buffer = Vec::new();
+    buffer.resize(64, 0u8);
+
+    loop {
+        let n = stream.as_ref().read(&mut buffer).map_err(|err| {
+            eprintln!("ERROR: could not read stream - {err}");
+            let _ = sender.send(ChatMessage::Disconnected(stream.clone()));
+        })?;
+
+        sender
+            .send(ChatMessage::Message(stream.clone(), buffer[0..n].to_vec()))
             .map_err(|err| eprintln!("ERROR: channel hang up - {err}"))?;
-
-        let mut buffer = Vec::new();
-        buffer.resize(64, 0u8);
-
-        loop {
-            let n = self.stream.as_ref().read(&mut buffer).map_err(|err| {
-                eprintln!("ERROR: could not read stream - {err}");
-                let _ = self.sender.send(ChatMessage::Disconnected);
-            })?;
-
-            self.sender
-                .send(ChatMessage::Message(buffer[0..n].to_vec()))
-                .map_err(|err| eprintln!("ERROR: channel hang up - {err}"))?;
-        }
     }
 }
 
-struct Server {
-    receiver: Receiver<ChatMessage>,
-    clients: Vec<Arc<TcpStream>>,
-}
+fn server(receiver: Receiver<ChatMessage>) {
+    let mut clients = HashMap::new();
 
-impl Server {
-    fn new(recv: Receiver<ChatMessage>) -> Self {
-        Self {
-            receiver: recv,
-            clients: Vec::new(),
-        }
-    }
+    for message in receiver.iter() {
+        match message {
+            ChatMessage::Connected(stream) => {
+                let addr = stream
+                    .peer_addr()
+                    .expect("local address to be here")
+                    .clone();
+                clients.insert(
+                    addr,
+                    Client {
+                        conn: stream.clone(),
+                    },
+                );
+            }
+            ChatMessage::Disconnected(stream) => {
+                let addr = stream.peer_addr().expect("local address to be here");
+                clients.remove(&addr);
+                todo!()
+            }
+            ChatMessage::Message(stream, bytes) => {
+                let owner_addr = stream.peer_addr().expect("local address to be here");
 
-    fn start(&mut self) {
-        for message in self.receiver.iter() {
-            match message {
-                ChatMessage::Connected(stream) => {
-                    self.clients.push(stream);
-                }
-                ChatMessage::Disconnected => {
-                    todo!()
-                }
-                ChatMessage::Message(message) => {
-                    let message = String::from_utf8(message);
+                let message = String::from_utf8(bytes).map_err(|err| {
+                    eprintln!("ERROR: could not undertand message - {err}");
+                });
 
-                    match message {
-                        Ok(message) => {
-                            println!("{message}");
-                            //let _ = write!(self.clients[0].as_ref(), "{message}");
+                if let Ok(message) = message {
+                    for (&addr, client) in clients.iter() {
+                        if owner_addr != addr {
+                            let _ = write!(client.conn.as_ref(), "{message}");
                         }
-                        Err(error) => eprintln!("{}", error),
                     }
                 }
             }
@@ -79,7 +80,7 @@ impl Server {
 }
 
 fn main() -> Result<()> {
-    let addr = "127.0.0.1:3000";
+    let addr = "0.0.0.0:3000";
 
     let listener = TcpListener::bind(addr)
         .map_err(|err| eprintln!("ERROR: could not open TcpListener at {addr} - {err}"))?;
@@ -88,23 +89,13 @@ fn main() -> Result<()> {
 
     let (sender, receiver) = channel::<ChatMessage>();
 
-    thread::spawn(|| {
-        let mut server = Server::new(receiver);
-        server.start();
-    });
+    thread::spawn(|| server(receiver));
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let sender = sender.clone();
-
-                thread::spawn(|| {
-                    let client = Client {
-                        stream: stream.into(),
-                        sender,
-                    };
-                    let _ = client.handle_connection();
-                });
+                thread::spawn(|| client(sender, stream.into()));
             }
             Err(err) => {
                 eprintln!("ERROR: while reading the incoming TcpStream - {err}")
